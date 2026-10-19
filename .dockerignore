@@ -1,0 +1,33 @@
+# Dependencies / build artifacts (rebuilt inside the image)
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.nitro
+.tanstack
+.wrangler
+
+# Local env overrides & secrets (NEVER ship these; runtime env is set in EasyPanel)
+*.local
+.dev.vars
+.env.local
+.env.*.local
+
+# VCS / tooling
+.git
+.gitignore
+.github
+.lovable
+.vscode
+.idea
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# This probe is only used for build-output discovery, not the real image
+Dockerfile.probe
