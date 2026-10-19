@@ -32,6 +32,7 @@ import {
   fmtDur,
   fmtHora,
   metaEsperadaAgora,
+  minutosRestantesTurno,
   pct,
   pecasPorHora,
   somarIntervalos,
@@ -366,6 +367,23 @@ function Ritmo({ linhas, intervalos, data, geral }: { linhas: Linha[]; intervalo
   });
   const totPct = tot.esperado > 0 ? (100 * tot.pecas) / tot.esperado : null;
 
+  // uma máquina só (ou uma escolhida no filtro): tela de destaque, velocímetro grande
+  if (cards.length === 1) {
+    const { l, esperado, pct: p } = cards[0];
+    return (
+      <RitmoDestaque
+        l={l}
+        esperado={esperado}
+        pct={p}
+        hoje={hoje}
+        agora={agora}
+        data={data}
+        legenda={legenda(l.meta, esperado)}
+        estado={hoje ? estadoAgora(intervalos, l.maquina_id, agora) : null}
+      />
+    );
+  }
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -406,6 +424,150 @@ function Ritmo({ linhas, intervalos, data, geral }: { linhas: Linha[]; intervalo
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+const ESTADO_AGORA = {
+  rodando: { dot: "bg-success animate-pulse", t: "Rodando agora" },
+  parada: { dot: "bg-warning", t: "Parada agora" },
+  planejada: { dot: "bg-muted-foreground", t: "Em pausa planejada" },
+} as const;
+
+function RitmoDestaque({
+  l,
+  esperado,
+  pct: p,
+  hoje,
+  agora,
+  data,
+  legenda,
+  estado,
+}: {
+  l: Linha;
+  esperado: number;
+  pct: number | null;
+  hoje: boolean;
+  agora: number;
+  data: string;
+  legenda: string;
+  estado: EstadoAgora;
+}) {
+  const st = statusRitmo(l.meta, l.pecasApp, esperado, hoje);
+  const dif = l.pecasApp - Math.round(esperado);
+  const ritmo = pecasPorHora(l.pecasApp, l.produtivoApp);
+  const restaMin = minutosRestantesTurno(data, new Date(agora));
+  const restaH = restaMin / 60;
+  const falta = Math.max(0, l.meta - l.pecasApp);
+  const previsao = ritmo != null && hoje ? Math.round(l.pecasApp + ritmo * restaH) : null;
+  const necessario = hoje && l.meta > 0 && falta > 0 && restaH > 0 ? falta / restaH : null;
+  const d = disponibilidade({ produtivo: l.produtivoApp, parado: l.paradoApp, planejado: l.planejadoApp });
+
+  return (
+    <Card>
+      <CardContent className="p-4 sm:p-6">
+        <div className="grid items-center gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+          {/* velocímetro grande */}
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Ritmo {hoje ? "agora" : "do dia"}</div>
+                <div className="text-xl font-bold">{l.maquina}</div>
+                {estado && (
+                  <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className={cn("inline-block h-2.5 w-2.5 rounded-full", ESTADO_AGORA[estado].dot)} /> {ESTADO_AGORA[estado].t}
+                  </div>
+                )}
+              </div>
+              <Badge className={cn("px-3 py-1 text-sm", st.cls)}>{st.t}</Badge>
+            </div>
+            <Velocimetro pct={p} legenda={legenda} grande />
+          </div>
+
+          {/* números */}
+          <div className="grid grid-cols-2 gap-3">
+            <Bloco rotulo="Feito" valor={String(l.pecasApp)} sub={l.meta > 0 ? `de ${l.meta} no dia (${pct(l.pecasApp, l.meta)}%)` : "sem meta no dia"} grande />
+            <Bloco
+              rotulo={hoje ? "Esperado até agora" : "Meta do dia"}
+              valor={l.meta > 0 ? String(Math.round(esperado)) : "-"}
+              sub={
+                l.meta > 0 && esperado > 0 ? (
+                  <span className={cn("font-semibold", dif >= 0 ? "text-success" : "text-destructive")}>
+                    {dif >= 0 ? "▲" : "▼"} {Math.abs(dif)} {dif >= 0 ? "acima" : "abaixo"}
+                  </span>
+                ) : undefined
+              }
+              grande
+            />
+            <Bloco rotulo="Ritmo real" valor={ritmo == null ? "-" : ritmo.toFixed(1)} sub="peças por hora rodando" />
+            {hoje ? (
+              <Bloco
+                rotulo="Para bater a meta"
+                valor={l.meta === 0 ? "-" : falta === 0 ? "Batida" : necessario == null ? "-" : necessario.toFixed(1)}
+                sub={
+                  l.meta === 0
+                    ? "sem meta"
+                    : falta === 0
+                      ? "meta do dia alcançada"
+                      : restaMin > 0
+                        ? `peças/h nas ${fmtDur(restaMin * 60)} que faltam`
+                        : `turno acabou, faltaram ${falta}`
+                }
+                tom={falta === 0 && l.meta > 0 ? "success" : undefined}
+              />
+            ) : (
+              <Bloco rotulo="Resultado" valor={l.meta > 0 ? `${pct(l.pecasApp, l.meta)}%` : "-"} sub="da meta do dia" />
+            )}
+            {hoje && (
+              <Bloco
+                rotulo="Previsão no fim do turno"
+                valor={previsao == null ? "-" : String(previsao)}
+                sub={previsao == null ? "aguardando ritmo" : l.meta > 0 ? `${pct(previsao, l.meta)}% da meta, mantendo o ritmo` : "mantendo o ritmo"}
+                tom={previsao == null || l.meta === 0 ? undefined : previsao >= l.meta ? "success" : "destructive"}
+              />
+            )}
+            <Bloco
+              rotulo="Rodando / parado"
+              valor={`${fmtDur(l.produtivoApp)} / ${fmtDur(l.paradoApp)}`}
+              sub={d == null ? "disponibilidade -" : `disponibilidade ${d}%`}
+            />
+          </div>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Ponteiro = peças feitas ÷ peças esperadas {hoje ? "até agora (meta do dia proporcional ao turno já passado, sem o almoço)" : "no dia"}. Vermelho abaixo de 90% · amarelo 90 a 99% · verde 100% ou mais.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Bloco({
+  rotulo,
+  valor,
+  sub,
+  grande,
+  tom,
+}: {
+  rotulo: string;
+  valor: string;
+  sub?: React.ReactNode;
+  grande?: boolean;
+  tom?: "success" | "destructive";
+}) {
+  return (
+    <div className="rounded-xl bg-muted/60 p-3 sm:p-4">
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{rotulo}</div>
+      <div
+        className={cn(
+          "font-bold tabular-nums",
+          grande ? "text-3xl sm:text-4xl" : "text-xl sm:text-2xl",
+          tom === "success" && "text-success",
+          tom === "destructive" && "text-destructive",
+        )}
+      >
+        {valor}
+      </div>
+      {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
+    </div>
   );
 }
 

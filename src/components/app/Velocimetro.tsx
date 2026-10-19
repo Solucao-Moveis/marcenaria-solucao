@@ -60,7 +60,7 @@ export function corDoRitmo(pct: number | null) {
   return pct >= 100 ? "var(--success)" : pct >= 90 ? "var(--warning)" : "var(--destructive)";
 }
 
-export function Velocimetro({ pct, legenda }: { pct: number | null; legenda: string }) {
+export function Velocimetro({ pct, legenda, grande }: { pct: number | null; legenda: string; grande?: boolean }) {
   const ativo = pct != null;
   const agulha = useRef<SVGGElement>(null);
   const numero = useRef<SVGTSpanElement>(null);
@@ -80,7 +80,7 @@ export function Velocimetro({ pct, legenda }: { pct: number | null; legenda: str
   return (
     <svg
       viewBox={`0 0 ${W} 186`}
-      className="mx-auto block w-full max-w-[240px]"
+      className={grande ? "mx-auto block w-full max-w-[460px]" : "mx-auto block w-full max-w-[240px]"}
       role="img"
       aria-label={ativo ? `${Math.round(pct)}% ${legenda}` : legenda}
     >

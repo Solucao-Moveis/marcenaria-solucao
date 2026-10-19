@@ -264,6 +264,19 @@ export function metaEsperadaAgora(meta: number, dataIso: string, agora: Date): n
   return Math.round(meta * Math.min(1, feito / total));
 }
 
+/** Minutos de turno normal que ainda faltam (sem almoço). Dia passado = 0; dia futuro = turno inteiro. */
+export function minutosRestantesTurno(dataIso: string, agora: Date): number {
+  const slots = getBaseGoalSlots(dataIso);
+  const total = slots.reduce((s, x) => s + x.minutes, 0);
+  const hoje = isoLocal(agora);
+  if (dataIso < hoje) return 0;
+  if (dataIso > hoje) return total;
+  const now = minutosDoDia(agora);
+  let resta = 0;
+  for (const s of slots) resta += Math.max(0, hhmm(s.end) - Math.max(now, hhmm(s.start)));
+  return resta;
+}
+
 export function isoLocal(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
