@@ -22,7 +22,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DatePicker } from "@/components/app/DatePicker";
 import { cn } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useMarcenariaRealtime } from "@/lib/use-realtime";
+import { useMarcenariaRealtime, useTick } from "@/lib/use-realtime";
+import { Velocimetro } from "@/components/app/Velocimetro";
 import { formatDateBR, getApontamentoSlots, getBaseGoalSlots, todayIso, type TimeSlot } from "@/lib/time-slots";
 import {
   api,
@@ -30,6 +31,7 @@ import {
   faixaDoHorario,
   fmtDur,
   fmtHora,
+  metaEsperadaAgora,
   pct,
   pecasPorHora,
   somarIntervalos,
@@ -55,13 +57,16 @@ function DashboardPage() {
   const [data, setData] = useState(todayIso());
   const [maquina, setMaquina] = useState("todas");
 
-  const intervalosQ = useQuery({ queryKey: ["intervalos", data], queryFn: () => api.intervalos(data) });
-  const resumoQ = useQuery({ queryKey: ["resumo", data], queryFn: () => api.resumoDia(data) });
+  const ehHoje = data === todayIso();
+  // hoje: recarrega a cada minuto (tempos de quem está rodando/parado andam com o relógio)
+  const refetchInterval = ehHoje ? 60_000 : false;
+  const intervalosQ = useQuery({ queryKey: ["intervalos", data], queryFn: () => api.intervalos(data), refetchInterval });
+  const resumoQ = useQuery({ queryKey: ["resumo", data], queryFn: () => api.resumoDia(data), refetchInterval });
   const producoesQ = useQuery({
     queryKey: ["producoes-dia", data],
     queryFn: async () => api.producoesDe((await api.sessoesDoDia(data)).map((s) => s.id)),
+    refetchInterval,
   });
-  const ehHoje = data === todayIso();
   useMarcenariaRealtime(ehHoje ? [["intervalos", data], ["resumo", data], ["producoes-dia", data]] : []);
 
   const carregando = intervalosQ.isLoading || resumoQ.isLoading || producoesQ.isLoading;
@@ -184,6 +189,8 @@ function DashboardPage() {
             <Card><CardContent className="py-12 text-center text-muted-foreground">Nenhuma máquina com dados em {formatDateBR(data)}.</CardContent></Card>
           ) : (
             <>
+              <Ritmo linhas={linhas} intervalos={intervalos} data={data} geral={maquina === "todas"} />
+
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card>
                   <CardHeader><CardTitle className="text-base">Meta × realizado por máquina</CardTitle></CardHeader>
@@ -317,6 +324,146 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: 
         {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
       </CardContent>
     </Card>
+  );
+}
+
+// ---------- ritmo (velocímetros) ----------
+
+type EstadoAgora = "rodando" | "parada" | "planejada" | null;
+
+function estadoAgora(intervalos: Intervalo[], maquinaId: string, agora: number): EstadoAgora {
+  // trecho ainda aberto = termina "agora" (o banco fecha o trecho aberto no horário da consulta)
+  const aberto = intervalos.find((i) => i.maquina_id === maquinaId && Date.parse(i.fim) >= agora - 150_000);
+  if (!aberto) return null;
+  return aberto.estado === "rodando" ? "rodando" : aberto.planejada ? "planejada" : "parada";
+}
+
+function statusRitmo(meta: number, pecas: number, esperado: number, hoje: boolean) {
+  if (meta === 0) return { cls: "bg-muted text-muted-foreground", t: pecas > 0 ? "Sem meta lançada" : "Sem meta" };
+  if (hoje && esperado === 0) return { cls: "bg-muted text-muted-foreground", t: "Aguardando o turno" };
+  const r = pecas / esperado;
+  if (r >= 1) return { cls: "bg-success text-success-foreground", t: hoje ? "No ritmo" : "Meta batida" };
+  if (r >= 0.9) return { cls: "bg-warning text-warning-foreground", t: "Atenção" };
+  return { cls: "bg-destructive text-destructive-foreground", t: hoje ? "Atrasado" : "Abaixo da meta" };
+}
+
+function Ritmo({ linhas, intervalos, data, geral }: { linhas: Linha[]; intervalos: Intervalo[]; data: string; geral: boolean }) {
+  // a cada 30s o esperado anda com o relógio, mesmo sem peça nova
+  const agora = useTick(30_000);
+  const hoje = data === todayIso();
+  const hora = new Date(agora).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const legenda = (meta: number, esperado: number) =>
+    meta === 0 ? "sem meta no dia" : hoje ? (esperado === 0 ? "turno não começou" : `até as ${hora}`) : "do dia";
+
+  const cards = linhas.map((l) => {
+    const esperado = metaEsperadaAgora(l.meta, data, new Date(agora));
+    return { l, esperado, pct: esperado > 0 ? (100 * l.pecasApp) / esperado : null };
+  });
+  const tot = cards.reduce((t, c) => ({ meta: t.meta + c.l.meta, pecas: t.pecas + c.l.pecasApp, esperado: t.esperado + c.esperado }), {
+    meta: 0,
+    pecas: 0,
+    esperado: 0,
+  });
+  const totPct = tot.esperado > 0 ? (100 * tot.pecas) / tot.esperado : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Ritmo {hoje ? "agora" : "do dia"}</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Ponteiro = peças feitas ÷ peças esperadas {hoje ? "até agora (meta do dia proporcional ao turno já passado, sem o almoço)" : "no dia (meta cheia)"}.
+          Vermelho abaixo de 90% · amarelo 90 a 99% · verde 100% ou mais.
+        </p>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {geral && linhas.length > 1 && (
+            <RitmoCard
+              titulo="Marcenaria (todas)"
+              destaque
+              pecas={tot.pecas}
+              meta={tot.meta}
+              esperado={tot.esperado}
+              pct={totPct}
+              hoje={hoje}
+              legenda={legenda(tot.meta, tot.esperado)}
+              estado={null}
+            />
+          )}
+          {cards.map(({ l, esperado, pct: p }) => (
+            <RitmoCard
+              key={l.maquina_id}
+              titulo={l.maquina}
+              pecas={l.pecasApp}
+              meta={l.meta}
+              esperado={esperado}
+              pct={p}
+              hoje={hoje}
+              legenda={legenda(l.meta, esperado)}
+              estado={hoje ? estadoAgora(intervalos, l.maquina_id, agora) : null}
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RitmoCard({
+  titulo,
+  destaque,
+  pecas,
+  meta,
+  esperado,
+  pct: p,
+  hoje,
+  legenda,
+  estado,
+}: {
+  titulo: string;
+  destaque?: boolean;
+  pecas: number;
+  meta: number;
+  esperado: number;
+  pct: number | null;
+  hoje: boolean;
+  legenda: string;
+  estado: EstadoAgora;
+}) {
+  const st = statusRitmo(meta, pecas, esperado, hoje);
+  const dif = pecas - Math.round(esperado);
+  const ESTADO = {
+    rodando: { dot: "bg-success animate-pulse", t: "rodando" },
+    parada: { dot: "bg-warning", t: "parada" },
+    planejada: { dot: "bg-muted-foreground", t: "pausa planejada" },
+  } as const;
+  return (
+    <div className={cn("rounded-xl border p-3", destaque && "border-primary/40 bg-primary/5")}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold">{titulo}</div>
+          {estado && (
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span className={cn("inline-block h-2 w-2 rounded-full", ESTADO[estado].dot)} /> {ESTADO[estado].t}
+            </div>
+          )}
+        </div>
+        <Badge className={cn("shrink-0 text-[10px]", st.cls)}>{st.t}</Badge>
+      </div>
+      <div className="mt-1 text-2xl font-bold tabular-nums">
+        {pecas}
+        <span className="ml-1 text-sm font-normal text-muted-foreground">{meta > 0 ? `de ${meta}` : "peças"}</span>
+      </div>
+      <Velocimetro pct={p} legenda={legenda} />
+      {meta > 0 && esperado > 0 && (
+        <div className="text-center text-xs text-muted-foreground">
+          esperado {hoje ? "até agora" : "no dia"}: <b className="text-foreground">{Math.round(esperado)}</b>{" "}
+          <span className={cn("font-semibold", dif >= 0 ? "text-success" : "text-destructive")}>
+            {dif >= 0 ? "▲" : "▼"} {Math.abs(dif)}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
